@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="@color/call_background"
+    android:padding="32dp">
+
+    <!-- Espace supérieur -->
+    <View
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <!-- Avatar animé -->
+    <FrameLayout
+        android:layout_width="140dp"
+        android:layout_height="140dp"
+        android:layout_gravity="center_horizontal">
+
+        <!-- Cercle de pulsation (animé via drawable) -->
+        <View
+            android:id="@+id/view_pulse"
+            android:layout_width="140dp"
+            android:layout_height="140dp"
+            android:background="@drawable/circle_pulse"
+            android:alpha="0.3" />
+
+        <!-- Avatar principal -->
+        <TextView
+            android:layout_width="120dp"
+            android:layout_height="120dp"
+            android:layout_gravity="center"
+            android:background="@drawable/circle_avatar_large"
+            android:gravity="center"
+            android:text="👤"
+            android:textSize="48sp" />
+    </FrameLayout>
+
+    <!-- Nom du pair -->
+    <TextView
+        android:id="@+id/tv_call_peer_name"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="28dp"
+        android:textSize="28sp"
+        android:textStyle="bold"
+        android:textColor="@color/white"
+        android:fontFamily="sans-serif-medium" />
+
+    <!-- Statut -->
+    <TextView
+        android:id="@+id/tv_call_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textSize="15sp"
+        android:textColor="#AAFFFFFF" />
+
+    <!-- Timer -->
+    <TextView
+        android:id="@+id/tv_call_timer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="00:00"
+        android:textSize="20sp"
+        android:textColor="@color/white"
+        android:fontFamily="monospace"
+        android:visibility="invisible" />
+
+    <!-- Espace intermédiaire -->
+    <View
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <!-- Contrôles d'appel -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_marginBottom="40dp">
+
+        <!-- Bouton Mute -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginEnd="48dp">
+
+            <ImageButton
+                android:id="@+id/btn_mute"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:background="@drawable/circle_control"
+                android:src="@android:drawable/ic_lock_silent_mode_off"
+                android:tint="@color/white"
+                android:scaleType="centerInside"
+                android:padding="16dp"
+                android:contentDescription="Couper le micro" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Micro"
+                android:textSize="12sp"
+                android:textColor="#AAFFFFFF" />
+        </LinearLayout>
+
+        <!-- Bouton Raccrocher (central, plus grand) -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_hangup"
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:text=""
+                app:icon="@android:drawable/ic_menu_call"
+                app:iconSize="32dp"
+                app:iconGravity="textStart"
+                app:iconPadding="0dp"
+                app:backgroundTint="@color/red"
+                app:cornerRadius="40dp"
+                android:rotation="135"
+                android:contentDescription="Raccrocher" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Raccrocher"
+                android:textSize="12sp"
+                android:textColor="#AAFFFFFF" />
+        </LinearLayout>
+
+    </LinearLayout>
+
+</LinearLayout>
