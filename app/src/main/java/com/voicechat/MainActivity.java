@@ -13,7 +13,6 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.view.View;
 import android.widget.TextView;
-
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -32,11 +31,9 @@ public class MainActivity extends AppCompatActivity
         implements DiscoveryService.DiscoveryListener {
 
     private static final int REQUEST_PERMISSIONS = 100;
-    private static final int MY_AUDIO_PORT = 49876;
 
     private DiscoveryService discoveryService;
     private boolean serviceBound = false;
-    private boolean permissionsGranted = false;
 
     private PeerAdapter peerAdapter;
     private TextView tvMyName;
@@ -50,10 +47,9 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         try {
             setContentView(R.layout.activity_main);
-            myDisplayName = getDeviceNameSafe();
+            myDisplayName = Build.MODEL;
             initViews();
             checkPermissionsAndStart();
         } catch (Exception e) {
@@ -86,16 +82,15 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void initViews() {
-        tvMyName   = findViewById(R.id.tv_my_name);
-        tvWifiInfo = findViewById(R.id.tv_wifi_info);
-        tvNoPeers  = findViewById(R.id.tv_no_peers);
+        tvMyName     = findViewById(R.id.tv_my_name);
+        tvWifiInfo   = findViewById(R.id.tv_wifi_info);
+        tvNoPeers    = findViewById(R.id.tv_no_peers);
         recyclerView = findViewById(R.id.recycler_peers);
-        fabRefresh = findViewById(R.id.fab_refresh);
+        fabRefresh   = findViewById(R.id.fab_refresh);
 
-        if (tvMyName != null)
-            tvMyName.setText("Vous : " + myDisplayName);
+        if (tvMyName != null) tvMyName.setText("Vous : " + myDisplayName);
 
-        peerAdapter = new PeerAdapter(peer -> onPeerSelected(peer));
+        peerAdapter = new PeerAdapter(this::onPeerSelected);
         if (recyclerView != null) {
             recyclerView.setLayoutManager(new LinearLayoutManager(this));
             recyclerView.setAdapter(peerAdapter);
@@ -109,17 +104,16 @@ public class MainActivity extends AppCompatActivity
                 }
             });
         }
-
         updateWifiInfo();
     }
 
     private void updateWifiInfo() {
         try {
-            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            WifiManager wifi = (WifiManager) getApplicationContext()
+                    .getSystemService(Context.WIFI_SERVICE);
             if (tvWifiInfo == null) return;
             if (wifi != null && wifi.isWifiEnabled()) {
-                WifiInfo info = wifi.getConnectionInfo();
-                int ipInt = info.getIpAddress();
+                int ipInt = wifi.getConnectionInfo().getIpAddress();
                 if (ipInt != 0) {
                     String ip = String.format("%d.%d.%d.%d",
                             (ipInt & 0xff), (ipInt >> 8 & 0xff),
@@ -127,7 +121,7 @@ public class MainActivity extends AppCompatActivity
                     tvWifiInfo.setText("Wi-Fi connecté • " + ip);
                     tvWifiInfo.setTextColor(ContextCompat.getColor(this, R.color.green));
                 } else {
-                    tvWifiInfo.setText("Wi-Fi connecté (IP non disponible)");
+                    tvWifiInfo.setText("Wi-Fi connecté");
                     tvWifiInfo.setTextColor(ContextCompat.getColor(this, R.color.green));
                 }
             } else {
@@ -135,8 +129,7 @@ public class MainActivity extends AppCompatActivity
                 tvWifiInfo.setTextColor(ContextCompat.getColor(this, R.color.red));
             }
         } catch (Exception e) {
-            if (tvWifiInfo != null)
-                tvWifiInfo.setText("Wi-Fi : état inconnu");
+            if (tvWifiInfo != null) tvWifiInfo.setText("Wi-Fi : état inconnu");
         }
     }
 
@@ -144,8 +137,7 @@ public class MainActivity extends AppCompatActivity
         try {
             new AlertDialog.Builder(this)
                     .setTitle("Appeler " + peer.getDisplayName())
-                    .setMessage("Voulez-vous démarrer un appel vocal avec "
-                            + peer.getDisplayName() + " ?")
+                    .setMessage("Démarrer un appel vocal avec " + peer.getDisplayName() + " ?")
                     .setPositiveButton("Appeler", (d, w) -> initiateCall(peer))
                     .setNegativeButton("Annuler", null)
                     .show();
@@ -160,10 +152,8 @@ public class MainActivity extends AppCompatActivity
             discoveryService.sendCallRequest(peer.getId());
             Intent intent = new Intent(this, CallActivity.class);
             intent.putExtra(CallActivity.EXTRA_PEER_NAME, peer.getDisplayName());
-            intent.putExtra(CallActivity.EXTRA_PEER_IP, peer.getAddress().getHostAddress());
-            intent.putExtra(CallActivity.EXTRA_PEER_AUDIO_PORT, peer.getAudioPort());
-            intent.putExtra(CallActivity.EXTRA_PEER_ID, peer.getId());
-            intent.putExtra(CallActivity.EXTRA_MY_AUDIO_PORT, MY_AUDIO_PORT);
+            intent.putExtra(CallActivity.EXTRA_PEER_IP,   peer.getAddress().getHostAddress());
+            intent.putExtra(CallActivity.EXTRA_PEER_ID,   peer.getId());
             intent.putExtra(CallActivity.EXTRA_IS_CALLER, true);
             startActivity(intent);
         } catch (Exception e) {
@@ -192,7 +182,7 @@ public class MainActivity extends AppCompatActivity
                     .setTitle("📞 Appel entrant")
                     .setMessage(from.getDisplayName() + " vous appelle.")
                     .setPositiveButton("Répondre", (d, w) -> acceptCall(from))
-                    .setNegativeButton("Refuser", (d, w) -> {
+                    .setNegativeButton("Refuser",  (d, w) -> {
                         if (serviceBound) discoveryService.sendCallReject(from.getId());
                     })
                     .setCancelable(false)
@@ -205,13 +195,13 @@ public class MainActivity extends AppCompatActivity
     private void acceptCall(Peer from) {
         if (!serviceBound) return;
         try {
+            // Envoyer CALL_ACCEPT AVANT d'ouvrir l'activité
             discoveryService.sendCallAccept(from.getId());
+
             Intent intent = new Intent(this, CallActivity.class);
             intent.putExtra(CallActivity.EXTRA_PEER_NAME, from.getDisplayName());
-            intent.putExtra(CallActivity.EXTRA_PEER_IP, from.getAddress().getHostAddress());
-            intent.putExtra(CallActivity.EXTRA_PEER_AUDIO_PORT, from.getAudioPort());
-            intent.putExtra(CallActivity.EXTRA_PEER_ID, from.getId());
-            intent.putExtra(CallActivity.EXTRA_MY_AUDIO_PORT, MY_AUDIO_PORT);
+            intent.putExtra(CallActivity.EXTRA_PEER_IP,   from.getAddress().getHostAddress());
+            intent.putExtra(CallActivity.EXTRA_PEER_ID,   from.getId());
             intent.putExtra(CallActivity.EXTRA_IS_CALLER, false);
             startActivity(intent);
         } catch (Exception e) {
@@ -220,33 +210,25 @@ public class MainActivity extends AppCompatActivity
         }
     }
 
-    @Override
-    public void onCallAccepted(Peer by) {}
-
-    @Override
-    public void onCallRejected(Peer by) {
-        Toast.makeText(this, by.getDisplayName() + " a refusé l'appel.",
-                Toast.LENGTH_SHORT).show();
+    @Override public void onCallAccepted(Peer by) {}
+    @Override public void onCallRejected(Peer by) {
+        Toast.makeText(this, by.getDisplayName() + " a refusé.", Toast.LENGTH_SHORT).show();
     }
-
-    @Override
-    public void onCallEnded(Peer by) {
+    @Override public void onCallEnded(Peer by) {
         Toast.makeText(this, "Appel terminé.", Toast.LENGTH_SHORT).show();
     }
-
-    // ServiceConnection
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             try {
-                DiscoveryService.LocalBinder binder = (DiscoveryService.LocalBinder) service;
-                discoveryService = binder.getService();
+                discoveryService = ((DiscoveryService.LocalBinder) service).getService();
                 discoveryService.setListener(MainActivity.this);
                 serviceBound = true;
-
                 if (discoveryService.getSelfId() == null) {
-                    discoveryService.startDiscovery(myDisplayName, MY_AUDIO_PORT);
+                    // Port d'annonce : on annonce le port CALLEE car c'est la valeur par défaut
+                    // Le vrai port est assigné dans CallActivity selon le rôle
+                    discoveryService.startDiscovery(myDisplayName, CallActivity.CALLEE_AUDIO_PORT);
                 }
                 onPeersChanged(discoveryService.getPeerList());
             } catch (Exception e) {
@@ -255,75 +237,33 @@ public class MainActivity extends AppCompatActivity
                         Toast.LENGTH_SHORT).show();
             }
         }
-
         @Override
-        public void onServiceDisconnected(ComponentName name) {
-            serviceBound = false;
-        }
+        public void onServiceDisconnected(ComponentName name) { serviceBound = false; }
     };
 
-    // Permissions
-
     private void checkPermissionsAndStart() {
-        String[] permissions;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions = new String[]{
-                    Manifest.permission.RECORD_AUDIO,
-                    Manifest.permission.ACCESS_WIFI_STATE,
-                    Manifest.permission.NEARBY_WIFI_DEVICES
-            };
-        } else {
-            permissions = new String[]{
-                    Manifest.permission.RECORD_AUDIO,
-                    Manifest.permission.ACCESS_WIFI_STATE
-            };
-        }
-
+        String[] permissions = { Manifest.permission.RECORD_AUDIO };
         boolean allGranted = true;
-        for (String perm : permissions) {
-            if (ContextCompat.checkSelfPermission(this, perm)
-                    != PackageManager.PERMISSION_GRANTED) {
-                allGranted = false;
-                break;
+        for (String p : permissions) {
+            if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+                allGranted = false; break;
             }
         }
-
-        if (!allGranted) {
-            ActivityCompat.requestPermissions(this, permissions, REQUEST_PERMISSIONS);
-        } else {
-            permissionsGranted = true;
-        }
+        if (!allGranted) ActivityCompat.requestPermissions(this, permissions, REQUEST_PERMISSIONS);
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode,
-                                           @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
+            @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_PERMISSIONS) {
-            boolean allOk = true;
-            for (int result : grantResults) {
-                if (result != PackageManager.PERMISSION_GRANTED) {
-                    allOk = false;
-                    break;
+            for (int r : grantResults) {
+                if (r != PackageManager.PERMISSION_GRANTED) {
+                    Toast.makeText(this, "Permission microphone requise.",
+                            Toast.LENGTH_LONG).show();
+                    return;
                 }
             }
-            permissionsGranted = allOk;
-            if (!allOk) {
-                Toast.makeText(this,
-                        "Permission microphone requise pour les appels.",
-                        Toast.LENGTH_LONG).show();
-            }
         }
-    }
-
-    // Utilitaires
-
-    private String getDeviceNameSafe() {
-        try {
-            String name = Build.MODEL;
-            if (name != null && !name.isEmpty()) return name;
-        } catch (Exception ignored) {}
-        return "Android-" + (int)(Math.random() * 1000);
     }
 }
