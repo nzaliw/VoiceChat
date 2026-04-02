@@ -13,6 +13,7 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.view.View;
 import android.widget.TextView;
+
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -40,7 +41,7 @@ public class MainActivity extends AppCompatActivity
     private PeerAdapter peerAdapter;
     private TextView tvMyName;
     private TextView tvWifiInfo;
-    private TextView tvNoPeers;
+    private View tvNoPeers;
     private RecyclerView recyclerView;
     private FloatingActionButton fabRefresh;
 
