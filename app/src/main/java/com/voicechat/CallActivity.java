@@ -21,7 +21,7 @@ import java.net.InetAddress;
 import java.util.List;
 
 public class CallActivity extends AppCompatActivity
-        implements DiscoveryService.DiscoveryListener {
+        implements CallManager.CallEventListener {
 
     private static final String TAG = "CallActivity";
 
@@ -44,21 +44,21 @@ public class CallActivity extends AppCompatActivity
     private boolean discoveryBound = false;
     private boolean audioBound     = false;
 
-    // État : on attend que les DEUX services soient liés ET que l'appel soit accepté
-    private boolean audioStarted  = false;
-    private boolean callReady     = false; // signal "go" reçu
+    // Drapeaux
+    private boolean audioStarted = false;
+    private boolean callReady    = false;
 
     // UI
     private TextView       tvPeerName, tvCallStatus, tvTimer;
     private ImageButton    btnMute;
     private MaterialButton btnHangup;
 
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private int elapsedSeconds = 0;
+    private final Handler mainHandler    = new Handler(Looper.getMainLooper());
+    private int           elapsedSeconds = 0;
 
-    // Retransmission du CALL_ACCEPT côté appelant (au cas où le premier paquet est perdu)
-    private static final int RETRY_INTERVAL_MS = 1500;
-    private static final int MAX_RETRIES       = 6;
+    // Retransmission CALL_ACCEPT
+    private static final int RETRY_MS   = 1500;
+    private static final int MAX_RETRY  = 8;
     private int retryCount = 0;
 
     // -------------------------------------------------------------------------
@@ -78,17 +78,16 @@ public class CallActivity extends AppCompatActivity
         myAudioPort   = isCaller ? CALLER_AUDIO_PORT : CALLEE_AUDIO_PORT;
         peerAudioPort = isCaller ? CALLEE_AUDIO_PORT : CALLER_AUDIO_PORT;
 
-        Log.d(TAG, "onCreate isCaller=" + isCaller
-                + " myPort=" + myAudioPort + " peerPort=" + peerAudioPort
-                + " peerIp=" + peerIp);
+        Log.d(TAG, "isCaller=" + isCaller + " my=" + myAudioPort + " peer=" + peerAudioPort + " ip=" + peerIp);
 
         initViews();
         updateStatus(isCaller ? "Appel de " + peerName + "..." : "Connexion...");
 
-        // Lier les deux services
-        Intent di = new Intent(this, DiscoveryService.class);
-        bindService(di, discoveryConn, Context.BIND_AUTO_CREATE);
+        // S'enregistrer dans CallManager
+        CallManager.get().setListener(this);
 
+        // Lier les services
+        bindService(new Intent(this, DiscoveryService.class), discoveryConn, Context.BIND_AUTO_CREATE);
         Intent ai = new Intent(this, AudioStreamService.class);
         startService(ai);
         bindService(ai, audioConn, Context.BIND_AUTO_CREATE);
@@ -98,17 +97,15 @@ public class CallActivity extends AppCompatActivity
     protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
         stopCall();
-        if (discoveryBound) {
-            try { discoveryService.setListener(null); unbindService(discoveryConn); }
-            catch (Exception ignored) {}
-        }
-        if (audioBound) {
-            try { unbindService(audioConn); } catch (Exception ignored) {}
-        }
+        // Redonner le listener à MainActivity
+        CallManager.get().setListener(null);
+        if (discoveryBound) try { discoveryService.setPeersListener(null); unbindService(discoveryConn); } catch (Exception ignored) {}
+        if (audioBound)     try { unbindService(audioConn); } catch (Exception ignored) {}
         super.onDestroy();
     }
 
-    @Override public void onBackPressed() { hangup(); }
+    @Override
+    public void onBackPressed() { hangup(); }
 
     // -------------------------------------------------------------------------
     // UI
@@ -120,7 +117,6 @@ public class CallActivity extends AppCompatActivity
         tvTimer      = findViewById(R.id.tv_call_timer);
         btnMute      = findViewById(R.id.btn_mute);
         btnHangup    = findViewById(R.id.btn_hangup);
-
         if (tvPeerName != null) tvPeerName.setText(peerName != null ? peerName : "");
         if (tvTimer    != null) tvTimer.setVisibility(View.INVISIBLE);
         if (btnMute    != null) btnMute.setOnClickListener(v -> toggleMute());
@@ -132,45 +128,44 @@ public class CallActivity extends AppCompatActivity
     }
 
     // -------------------------------------------------------------------------
-    // Logique centrale : démarrer l'audio quand TOUT est prêt
+    // Logique centrale
     // -------------------------------------------------------------------------
 
-    /**
-     * Appelé depuis n'importe quel thread quand :
-     * - Pour le CALLEE : dès que les deux services sont liés
-     * - Pour le CALLER : dès que CALL_ACCEPT est reçu ET les deux services sont liés
-     */
-    private void checkAndStartAudio() {
+    /** Vérifie si tout est prêt et démarre l'audio */
+    private void checkAndStart() {
         mainHandler.post(() -> {
             if (audioStarted) return;
             if (!callReady)   return;
-            if (!audioBound || audioStreamService == null) return;
-            if (!discoveryBound || discoveryService == null) return;
-
+            if (!audioBound || audioStreamService == null) {
+                Log.d(TAG, "checkAndStart: audio service pas encore lié");
+                return;
+            }
             audioStarted = true;
-            Log.d(TAG, "✅ Démarrage audio !");
+            CallManager.get().setInCall();
+            Log.d(TAG, "✅ DÉMARRAGE AUDIO");
+
             updateStatus("En communication");
             if (tvTimer != null) tvTimer.setVisibility(View.VISIBLE);
             mainHandler.postDelayed(timerRunnable, 1000);
 
             try {
-                InetAddress addr = InetAddress.getByName(peerIp);
-                audioStreamService.startStreaming(addr, peerAudioPort, myAudioPort);
+                audioStreamService.startStreaming(
+                        InetAddress.getByName(peerIp), peerAudioPort, myAudioPort);
             } catch (Exception e) {
-                Log.e(TAG, "Erreur démarrage audio", e);
-                updateStatus("Erreur réseau : " + e.getMessage());
+                Log.e(TAG, "Erreur audio", e);
+                updateStatus("Erreur réseau");
             }
         });
     }
 
-    /** Marque l'appel comme prêt et tente de démarrer */
-    private void signalCallReady() {
+    private void markReady() {
         callReady = true;
-        checkAndStartAudio();
+        checkAndStart();
     }
 
     private void stopCall() {
         mainHandler.removeCallbacks(timerRunnable);
+        mainHandler.removeCallbacks(retryRunnable);
         if (audioBound && audioStreamService != null && audioStreamService.isStreaming()) {
             audioStreamService.stopStreaming();
         }
@@ -181,7 +176,20 @@ public class CallActivity extends AppCompatActivity
             discoveryService.sendCallEnd(peerId);
         }
         stopCall();
+        CallManager.get().reset();
         finish();
+    }
+
+    private void endedByPeer() {
+        stopCall();
+        CallManager.get().reset();
+        updateStatus("Appel terminé par " + peerName);
+        runOnUiThread(() -> {
+            if (btnHangup != null) {
+                btnHangup.setText("Fermer");
+                btnHangup.setOnClickListener(v -> finish());
+            }
+        });
     }
 
     private void toggleMute() {
@@ -193,35 +201,30 @@ public class CallActivity extends AppCompatActivity
     }
 
     // -------------------------------------------------------------------------
-    // Retransmission périodique du CALL_ACCEPT (côté CALLEE)
-    // Envoie plusieurs fois pour compenser les pertes UDP
+    // Retransmission CALL_ACCEPT (côté CALLEE)
     // -------------------------------------------------------------------------
 
-    private final Runnable retryAcceptRunnable = new Runnable() {
+    private final Runnable retryRunnable = new Runnable() {
         @Override public void run() {
-            if (audioStarted || retryCount >= MAX_RETRIES) return;
+            if (audioStarted || retryCount >= MAX_RETRY) return;
             retryCount++;
             Log.d(TAG, "Retransmission CALL_ACCEPT #" + retryCount);
-            if (discoveryBound && discoveryService != null && peerId != null) {
+            if (discoveryBound && discoveryService != null)
                 discoveryService.sendCallAccept(peerId);
-            }
-            mainHandler.postDelayed(this, RETRY_INTERVAL_MS);
+            mainHandler.postDelayed(this, RETRY_MS);
         }
     };
 
     // -------------------------------------------------------------------------
-    // DiscoveryService.DiscoveryListener
+    // CallManager.CallEventListener
     // -------------------------------------------------------------------------
-
-    @Override public void onPeersChanged(List<Peer> peers) {}
-    @Override public void onCallRequest(Peer from) {}
 
     @Override
     public void onCallAccepted(Peer by) {
-        // L'APPELANT reçoit ici la confirmation que l'autre a décroché
+        // L'APPELANT reçoit ici la réponse du CALLEE
         if (isCaller && peerId != null && peerId.equals(by.getId())) {
-            Log.d(TAG, "CALL_ACCEPT reçu de " + by.getDisplayName());
-            signalCallReady();
+            Log.d(TAG, "CALL_ACCEPT reçu !");
+            markReady();
         }
     }
 
@@ -229,6 +232,7 @@ public class CallActivity extends AppCompatActivity
     public void onCallRejected(Peer by) {
         if (peerId != null && peerId.equals(by.getId())) {
             stopCall();
+            CallManager.get().reset();
             updateStatus(peerName + " a refusé.");
             runOnUiThread(() -> {
                 if (btnHangup != null) { btnHangup.setText("Fermer"); btnHangup.setOnClickListener(v -> finish()); }
@@ -238,13 +242,12 @@ public class CallActivity extends AppCompatActivity
 
     @Override
     public void onCallEnded(Peer by) {
-        if (peerId != null && peerId.equals(by.getId())) {
-            stopCall();
-            updateStatus("Appel terminé par " + peerName);
-            runOnUiThread(() -> {
-                if (btnHangup != null) { btnHangup.setText("Fermer"); btnHangup.setOnClickListener(v -> finish()); }
-            });
-        }
+        if (peerId != null && peerId.equals(by.getId())) endedByPeer();
+    }
+
+    @Override
+    public void onIncomingCall(Peer from) {
+        // Ne devrait pas arriver ici (on est déjà en appel)
     }
 
     // -------------------------------------------------------------------------
@@ -255,35 +258,29 @@ public class CallActivity extends AppCompatActivity
         @Override
         public void onServiceConnected(ComponentName n, IBinder b) {
             discoveryService = ((DiscoveryService.LocalBinder) b).getService();
-            discoveryService.setListener(CallActivity.this);
-            discoveryBound = true;
+            discoveryBound   = true;
             Log.d(TAG, "DiscoveryService lié");
 
             if (!isCaller) {
-                // CALLEE : envoyer CALL_ACCEPT maintenant que le service est prêt
-                // + retransmissions périodiques
+                // CALLEE : envoyer CALL_ACCEPT + retransmissions
                 discoveryService.sendCallAccept(peerId);
-                mainHandler.postDelayed(retryAcceptRunnable, RETRY_INTERVAL_MS);
-                // Marquer l'appel comme prêt du côté callee
-                signalCallReady();
+                mainHandler.postDelayed(retryRunnable, RETRY_MS);
+                markReady();
             }
-            // Pour le caller : on attend onCallAccepted()
-            checkAndStartAudio();
+            checkAndStart();
         }
-        @Override
-        public void onServiceDisconnected(ComponentName n) { discoveryBound = false; }
+        @Override public void onServiceDisconnected(ComponentName n) { discoveryBound = false; }
     };
 
     private final ServiceConnection audioConn = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName n, IBinder b) {
             audioStreamService = ((AudioStreamService.LocalBinder) b).getService();
-            audioBound = true;
+            audioBound         = true;
             Log.d(TAG, "AudioStreamService lié");
-            checkAndStartAudio();
+            checkAndStart();
         }
-        @Override
-        public void onServiceDisconnected(ComponentName n) { audioBound = false; }
+        @Override public void onServiceDisconnected(ComponentName n) { audioBound = false; }
     };
 
     // -------------------------------------------------------------------------
