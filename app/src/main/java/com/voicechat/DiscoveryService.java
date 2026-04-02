@@ -24,12 +24,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * Découverte des pairs via 3 méthodes combinées :
- * 1. Broadcast UDP 255.255.255.255
- * 2. Broadcast du sous-réseau (ex: 192.168.6.255)
- * 3. Scan direct de toute la plage IP (192.168.6.1 → 192.168.6.254)
- */
 public class DiscoveryService extends Service {
 
     private static final String TAG = "DiscoveryService";
@@ -98,19 +92,16 @@ public class DiscoveryService extends Service {
 
         executor.submit(() -> {
             try {
-                // Socket d'envoi
                 sendSocket = new DatagramSocket();
                 sendSocket.setBroadcast(true);
                 sendSocket.setSoTimeout(500);
 
-                // Socket de réception
                 recvSocket = new DatagramSocket(null);
                 recvSocket.setReuseAddress(true);
                 recvSocket.setBroadcast(true);
                 recvSocket.bind(new InetSocketAddress(DISCOVERY_PORT));
                 recvSocket.setSoTimeout(2000);
 
-                // Récupérer notre IP
                 myIpAddress = getMyIpAddress();
                 Log.d(TAG, "Discovery démarré. IP=" + myIpAddress + " name=" + selfName);
 
@@ -128,14 +119,10 @@ public class DiscoveryService extends Service {
 
     public void stopDiscovery() {
         running = false;
-        sendToAll(MSG_BYE, null);
+        sendToAll(MSG_BYE, null, null);
         closeSocket(sendSocket);
         closeSocket(recvSocket);
     }
-
-    // -------------------------------------------------------------------------
-    // Boucle de réception
-    // -------------------------------------------------------------------------
 
     private void receiveLoop() {
         byte[] buf = new byte[4096];
@@ -153,26 +140,16 @@ public class DiscoveryService extends Service {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Boucle d'annonce broadcast
-    // -------------------------------------------------------------------------
-
     private void announceLoop() {
         while (running) {
-            sendToAll(MSG_ANNOUNCE, null);
+            sendToAll(MSG_ANNOUNCE, null, null);
             try { Thread.sleep(ANNOUNCE_INTERVAL_MS); }
             catch (InterruptedException e) { break; }
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Scan direct de toute la plage IP du sous-réseau
-    // -------------------------------------------------------------------------
-
     private void scanLoop() {
-        // Attendre un peu que les sockets soient prêts
         try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
-
         while (running) {
             scanSubnet();
             try { Thread.sleep(SCAN_INTERVAL_MS); }
@@ -181,48 +158,27 @@ public class DiscoveryService extends Service {
     }
 
     private void scanSubnet() {
-        if (myIpAddress == null) {
-            myIpAddress = getMyIpAddress();
-            if (myIpAddress == null) return;
-        }
-
-        // Extraire le préfixe : "192.168.6.8" → "192.168.6."
+        if (myIpAddress == null) myIpAddress = getMyIpAddress();
+        if (myIpAddress == null) return;
         String prefix = getSubnetPrefix(myIpAddress);
         if (prefix == null) return;
-
-        Log.d(TAG, "Scan du sous-réseau " + prefix + "0/24 ...");
-
         try {
             JSONObject json = buildMessage(MSG_ANNOUNCE, null);
             byte[] data = json.toString().getBytes("UTF-8");
-
-            // Envoyer un paquet UDP directement à chaque IP possible (1→254)
             for (int i = 1; i <= 254 && running; i++) {
                 String targetIp = prefix + i;
-                if (targetIp.equals(myIpAddress)) continue; // ignorer notre propre IP
+                if (targetIp.equals(myIpAddress)) continue;
                 try {
                     InetAddress addr = InetAddress.getByName(targetIp);
-                    DatagramPacket packet = new DatagramPacket(
-                            data, data.length, addr, DISCOVERY_PORT);
-                    if (sendSocket != null && !sendSocket.isClosed()) {
-                        sendSocket.send(packet);
-                    }
+                    DatagramPacket pkt = new DatagramPacket(data, data.length, addr, DISCOVERY_PORT);
+                    if (sendSocket != null && !sendSocket.isClosed()) sendSocket.send(pkt);
                 } catch (Exception ignored) {}
-
-                // Petite pause pour ne pas saturer le réseau
-                if (i % 50 == 0) {
-                    try { Thread.sleep(20); } catch (InterruptedException e) { break; }
-                }
+                if (i % 50 == 0) try { Thread.sleep(20); } catch (InterruptedException e) { break; }
             }
-            Log.d(TAG, "Scan terminé.");
         } catch (Exception e) {
             Log.w(TAG, "Erreur scan : " + e.getMessage());
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Nettoyage des pairs inactifs
-    // -------------------------------------------------------------------------
 
     private void cleanupLoop() {
         while (running) {
@@ -231,51 +187,53 @@ public class DiscoveryService extends Service {
             Iterator<Map.Entry<String, Peer>> it = peers.entrySet().iterator();
             while (it.hasNext()) {
                 Map.Entry<String, Peer> entry = it.next();
-                if (!entry.getValue().isActive()) {
-                    it.remove();
-                    changed = true;
-                }
+                if (!entry.getValue().isActive()) { it.remove(); changed = true; }
             }
             if (changed) notifyPeersChanged();
         }
     }
 
     // -------------------------------------------------------------------------
-    // Envoi des messages
+    // Envoi — DIRECT vers le pair connu, broadcast en fallback
     // -------------------------------------------------------------------------
 
-    private void sendToAll(String type, String targetId) {
-        try {
-            JSONObject json = buildMessage(type, targetId);
-            byte[] data = json.toString().getBytes("UTF-8");
-
-            // 1. Broadcast global
-            sendBytes(data, "255.255.255.255");
-
-            // 2. Broadcast du sous-réseau
-            String subnetBcast = getSubnetBroadcast();
-            if (subnetBcast != null) sendBytes(data, subnetBcast);
-
-        } catch (Exception e) {
-            Log.w(TAG, "Erreur sendToAll : " + e.getMessage());
-        }
-    }
-
-    private void sendBytes(byte[] data, String ip) {
+    /**
+     * Envoie un message. Si peerIp est fourni, envoie DIRECTEMENT à cette IP.
+     * Sinon envoie en broadcast sur tout le réseau.
+     */
+    private void sendToAll(String type, String targetId, String peerIp) {
         executor.submit(() -> {
             try {
                 if (sendSocket == null || sendSocket.isClosed()) return;
-                InetAddress addr = InetAddress.getByName(ip);
-                DatagramPacket packet = new DatagramPacket(data, data.length, addr, DISCOVERY_PORT);
-                sendSocket.send(packet);
+                JSONObject json = buildMessage(type, targetId);
+                byte[] data = json.toString().getBytes("UTF-8");
+
+                if (peerIp != null) {
+                    // Envoi direct : ultra-rapide, pas de délai broadcast
+                    sendBytesTo(data, peerIp);
+                    // Aussi en broadcast pour fiabilité
+                    sendBytesTo(data, "255.255.255.255");
+                    String subnetBcast = getSubnetBroadcast();
+                    if (subnetBcast != null) sendBytesTo(data, subnetBcast);
+                } else {
+                    sendBytesTo(data, "255.255.255.255");
+                    String subnetBcast = getSubnetBroadcast();
+                    if (subnetBcast != null) sendBytesTo(data, subnetBcast);
+                }
             } catch (Exception e) {
-                Log.v(TAG, "Envoi échoué vers " + ip + " : " + e.getMessage());
+                Log.w(TAG, "Erreur sendToAll : " + e.getMessage());
             }
         });
     }
 
-    public void sendMessage(String type, String targetId) {
-        executor.submit(() -> sendToAll(type, targetId));
+    private void sendBytesTo(byte[] data, String ip) {
+        try {
+            InetAddress addr = InetAddress.getByName(ip);
+            DatagramPacket pkt = new DatagramPacket(data, data.length, addr, DISCOVERY_PORT);
+            sendSocket.send(pkt);
+        } catch (Exception e) {
+            Log.v(TAG, "Envoi échoué vers " + ip);
+        }
     }
 
     private JSONObject buildMessage(String type, String targetId) throws Exception {
@@ -288,16 +246,11 @@ public class DiscoveryService extends Service {
         return json;
     }
 
-    // -------------------------------------------------------------------------
-    // Traitement des messages reçus
-    // -------------------------------------------------------------------------
-
     private void handleMessage(String raw, InetAddress senderAddress) {
         try {
-            JSONObject json  = new JSONObject(raw);
-            String type      = json.getString("type");
-            String senderId  = json.getString("id");
-
+            JSONObject json = new JSONObject(raw);
+            String type     = json.getString("type");
+            String senderId = json.getString("id");
             if (selfId != null && selfId.equals(senderId)) return;
 
             String senderName = json.optString("name", "Inconnu");
@@ -314,8 +267,7 @@ public class DiscoveryService extends Service {
                     peer.setAudioPort(audioPort);
                     peer.setDisplayName(senderName);
                     if (isNew) {
-                        Log.d(TAG, "✅ Nouveau peer : " + senderName
-                                + " @ " + senderAddress.getHostAddress());
+                        Log.d(TAG, "Nouveau peer : " + senderName + " @ " + senderAddress.getHostAddress());
                         notifyPeersChanged();
                     }
                     break;
@@ -328,9 +280,7 @@ public class DiscoveryService extends Service {
                         Peer caller = peers.get(senderId);
                         if (caller != null) {
                             caller.setCalling(true);
-                            mainHandler.post(() -> {
-                                if (listener != null) listener.onCallRequest(caller);
-                            });
+                            mainHandler.post(() -> { if (listener != null) listener.onCallRequest(caller); });
                         }
                     }
                     break;
@@ -339,9 +289,7 @@ public class DiscoveryService extends Service {
                         Peer callee = peers.get(senderId);
                         if (callee != null) {
                             callee.setInCall(true);
-                            mainHandler.post(() -> {
-                                if (listener != null) listener.onCallAccepted(callee);
-                            });
+                            mainHandler.post(() -> { if (listener != null) listener.onCallAccepted(callee); });
                         }
                     }
                     break;
@@ -350,9 +298,7 @@ public class DiscoveryService extends Service {
                         Peer callee = peers.get(senderId);
                         if (callee != null) {
                             callee.setCalling(false);
-                            mainHandler.post(() -> {
-                                if (listener != null) listener.onCallRejected(callee);
-                            });
+                            mainHandler.post(() -> { if (listener != null) listener.onCallRejected(callee); });
                         }
                     }
                     break;
@@ -360,11 +306,8 @@ public class DiscoveryService extends Service {
                     if (selfId != null && selfId.equals(targetId)) {
                         Peer other = peers.get(senderId);
                         if (other != null) {
-                            other.setInCall(false);
-                            other.setCalling(false);
-                            mainHandler.post(() -> {
-                                if (listener != null) listener.onCallEnded(other);
-                            });
+                            other.setInCall(false); other.setCalling(false);
+                            mainHandler.post(() -> { if (listener != null) listener.onCallEnded(other); });
                         }
                     }
                     break;
@@ -374,98 +317,86 @@ public class DiscoveryService extends Service {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Utilitaires réseau
-    // -------------------------------------------------------------------------
+    // API publique — envoi direct vers le pair connu
+    public void sendCallRequest(String targetId) {
+        Peer p = peers.get(targetId);
+        sendToAll(MSG_CALL_REQUEST, targetId, p != null ? p.getAddress().getHostAddress() : null);
+    }
+    public void sendCallAccept(String targetId) {
+        Peer p = peers.get(targetId);
+        sendToAll(MSG_CALL_ACCEPT, targetId, p != null ? p.getAddress().getHostAddress() : null);
+    }
+    public void sendCallReject(String targetId) {
+        Peer p = peers.get(targetId);
+        sendToAll(MSG_CALL_REJECT, targetId, p != null ? p.getAddress().getHostAddress() : null);
+    }
+    public void sendCallEnd(String targetId) {
+        Peer p = peers.get(targetId);
+        sendToAll(MSG_CALL_END, targetId, p != null ? p.getAddress().getHostAddress() : null);
+    }
+    public void sendMessage(String type, String targetId) { sendToAll(type, targetId, null); }
+
+    public List<Peer> getPeerList()  { return new ArrayList<>(peers.values()); }
+    public String getSelfId()        { return selfId; }
+    public String getSelfName()      { return selfName; }
+    public int getSelfAudioPort()    { return selfAudioPort; }
+    public void setListener(DiscoveryListener l) { this.listener = l; }
+
+    private void notifyPeersChanged() {
+        mainHandler.post(() -> { if (listener != null) listener.onPeersChanged(getPeerList()); });
+    }
 
     private String getMyIpAddress() {
         try {
-            WifiManager wifi = (WifiManager) getApplicationContext()
-                    .getSystemService(WIFI_SERVICE);
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
             if (wifi == null) return null;
             int ipInt = wifi.getConnectionInfo().getIpAddress();
             if (ipInt == 0) return null;
             return String.format("%d.%d.%d.%d",
-                    (ipInt & 0xff), (ipInt >> 8 & 0xff),
-                    (ipInt >> 16 & 0xff), (ipInt >> 24 & 0xff));
-        } catch (Exception e) {
-            return null;
-        }
+                    (ipInt & 0xff), (ipInt >> 8 & 0xff), (ipInt >> 16 & 0xff), (ipInt >> 24 & 0xff));
+        } catch (Exception e) { return null; }
     }
 
     private String getSubnetPrefix(String ip) {
         try {
             int lastDot = ip.lastIndexOf('.');
-            if (lastDot < 0) return null;
-            return ip.substring(0, lastDot + 1); // "192.168.6."
-        } catch (Exception e) {
-            return null;
-        }
+            return lastDot < 0 ? null : ip.substring(0, lastDot + 1);
+        } catch (Exception e) { return null; }
     }
 
     private String getSubnetBroadcast() {
         try {
-            WifiManager wifi = (WifiManager) getApplicationContext()
-                    .getSystemService(WIFI_SERVICE);
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
             if (wifi == null) return null;
             int ipInt   = wifi.getConnectionInfo().getIpAddress();
             int maskInt = wifi.getDhcpInfo().netmask;
-            if (maskInt == 0) maskInt = 0x00FFFFFF; // /24 par défaut
+            if (maskInt == 0) maskInt = 0x00FFFFFF;
             int broadcast = (ipInt & maskInt) | ~maskInt;
             return String.format("%d.%d.%d.%d",
                     (broadcast & 0xff), (broadcast >> 8 & 0xff),
                     (broadcast >> 16 & 0xff), (broadcast >> 24 & 0xff));
-        } catch (Exception e) {
-            return null;
-        }
+        } catch (Exception e) { return null; }
     }
 
     private void acquireWifiLock() {
         try {
-            WifiManager wifi = (WifiManager) getApplicationContext()
-                    .getSystemService(WIFI_SERVICE);
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
             if (wifi != null) {
-                wifiLock = wifi.createWifiLock(
-                        WifiManager.WIFI_MODE_FULL_HIGH_PERF, "VoiceChatWifi");
+                wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "VoiceChatWifi");
                 wifiLock.acquire();
             }
-        } catch (Exception e) {
-            Log.w(TAG, "WifiLock non disponible");
-        }
+        } catch (Exception e) { Log.w(TAG, "WifiLock non disponible"); }
     }
 
     private void closeSocket(DatagramSocket s) {
         if (s != null && !s.isClosed()) try { s.close(); } catch (Exception ignored) {}
     }
 
-    // -------------------------------------------------------------------------
-    // API publique
-    // -------------------------------------------------------------------------
-
-    public void sendCallRequest(String t) { sendMessage(MSG_CALL_REQUEST, t); }
-    public void sendCallAccept(String t)  { sendMessage(MSG_CALL_ACCEPT,  t); }
-    public void sendCallReject(String t)  { sendMessage(MSG_CALL_REJECT,  t); }
-    public void sendCallEnd(String t)     { sendMessage(MSG_CALL_END,     t); }
-
-    public List<Peer> getPeerList()      { return new ArrayList<>(peers.values()); }
-    public String getSelfId()            { return selfId; }
-    public String getSelfName()          { return selfName; }
-    public int getSelfAudioPort()        { return selfAudioPort; }
-    public void setListener(DiscoveryListener l) { this.listener = l; }
-
-    private void notifyPeersChanged() {
-        mainHandler.post(() -> {
-            if (listener != null) listener.onPeersChanged(getPeerList());
-        });
-    }
-
     @Override
     public void onDestroy() {
         stopDiscovery();
         if (executor != null) executor.shutdownNow();
-        if (wifiLock != null && wifiLock.isHeld()) {
-            try { wifiLock.release(); } catch (Exception ignored) {}
-        }
+        if (wifiLock != null && wifiLock.isHeld()) try { wifiLock.release(); } catch (Exception ignored) {}
         super.onDestroy();
     }
 }
