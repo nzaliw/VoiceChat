@@ -12,9 +12,13 @@ import android.util.Log;
 import org.json.JSONObject;
 
 import java.net.DatagramPacket;
+import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.net.MulticastSocket;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -23,13 +27,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * Découverte des pairs via UDP Broadcast (255.255.255.255 + broadcast du sous-réseau).
+ * Plus compatible que le multicast sur les routeurs domestiques.
+ */
 public class DiscoveryService extends Service {
 
     private static final String TAG = "DiscoveryService";
-
-    public static final String MULTICAST_GROUP = "239.255.42.99";
     public static final int DISCOVERY_PORT = 45678;
-    private static final int ANNOUNCE_INTERVAL_MS = 3000;
+    private static final int ANNOUNCE_INTERVAL_MS = 2000;
 
     public static final String MSG_ANNOUNCE     = "ANNOUNCE";
     public static final String MSG_CALL_REQUEST = "CALL_REQUEST";
@@ -44,15 +50,15 @@ public class DiscoveryService extends Service {
 
     private final ConcurrentHashMap<String, Peer> peers = new ConcurrentHashMap<>();
 
-    private MulticastSocket multicastSocket;
-    private WifiManager.MulticastLock multicastLock;
-    private InetAddress groupAddress;
+    private DatagramSocket sendSocket;
+    private DatagramSocket recvSocket;
+    private WifiManager.WifiLock wifiLock;
 
     private ExecutorService executor;
     private volatile boolean running = false;
     private Handler mainHandler;
-
     private DiscoveryListener listener;
+
     private final IBinder binder = new LocalBinder();
 
     public class LocalBinder extends Binder {
@@ -73,16 +79,16 @@ public class DiscoveryService extends Service {
         mainHandler = new Handler(Looper.getMainLooper());
         executor = Executors.newFixedThreadPool(3);
 
+        // WifiLock pour maintenir le Wi-Fi actif
         try {
             WifiManager wifi = (WifiManager) getApplicationContext()
                     .getSystemService(WIFI_SERVICE);
             if (wifi != null) {
-                multicastLock = wifi.createMulticastLock("VoiceChatLock");
-                multicastLock.setReferenceCounted(true);
-                multicastLock.acquire();
+                wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "VoiceChatWifi");
+                wifiLock.acquire();
             }
         } catch (Exception e) {
-            Log.e(TAG, "Erreur multicast lock", e);
+            Log.w(TAG, "WifiLock non disponible : " + e.getMessage());
         }
     }
 
@@ -96,7 +102,6 @@ public class DiscoveryService extends Service {
 
     public void startDiscovery(String name, int audioPort) {
         if (running) return;
-
         selfId = UUID.randomUUID().toString();
         selfName = name;
         selfAudioPort = audioPort;
@@ -104,14 +109,19 @@ public class DiscoveryService extends Service {
 
         executor.submit(() -> {
             try {
-                groupAddress = InetAddress.getByName(MULTICAST_GROUP);
-                multicastSocket = new MulticastSocket(DISCOVERY_PORT);
-                multicastSocket.setReuseAddress(true);
-                multicastSocket.joinGroup(groupAddress);
-                multicastSocket.setTimeToLive(4);
-                multicastSocket.setSoTimeout(5000);
+                // Socket d'envoi (broadcast)
+                sendSocket = new DatagramSocket();
+                sendSocket.setBroadcast(true);
+                sendSocket.setSoTimeout(1000);
 
-                Log.d(TAG, "Discovery démarré. ID=" + selfId);
+                // Socket de réception
+                recvSocket = new DatagramSocket(null);
+                recvSocket.setReuseAddress(true);
+                recvSocket.setBroadcast(true);
+                recvSocket.bind(new InetSocketAddress(DISCOVERY_PORT));
+                recvSocket.setSoTimeout(2000);
+
+                Log.d(TAG, "Discovery broadcast démarré. ID=" + selfId + " name=" + selfName);
 
                 executor.submit(this::receiveLoop);
                 executor.submit(this::announceLoop);
@@ -126,26 +136,26 @@ public class DiscoveryService extends Service {
 
     public void stopDiscovery() {
         running = false;
-        try { sendMessage(MSG_BYE, null); } catch (Exception ignored) {}
-        try {
-            if (multicastSocket != null) {
-                try { multicastSocket.leaveGroup(groupAddress); } catch (Exception ignored) {}
-                multicastSocket.close();
-            }
-        } catch (Exception ignored) {}
+        sendBroadcastMessage(MSG_BYE, null);
+        try { if (sendSocket != null) sendSocket.close(); } catch (Exception ignored) {}
+        try { if (recvSocket != null) recvSocket.close(); } catch (Exception ignored) {}
     }
+
+    // -------------------------------------------------------------------------
+    // Boucles
+    // -------------------------------------------------------------------------
 
     private void receiveLoop() {
         byte[] buf = new byte[4096];
         while (running) {
             try {
-                if (multicastSocket == null || multicastSocket.isClosed()) break;
+                if (recvSocket == null || recvSocket.isClosed()) break;
                 DatagramPacket packet = new DatagramPacket(buf, buf.length);
-                multicastSocket.receive(packet);
+                recvSocket.receive(packet);
                 String msg = new String(packet.getData(), 0, packet.getLength(), "UTF-8");
                 handleMessage(msg, packet.getAddress());
             } catch (java.net.SocketTimeoutException e) {
-                // normal, continuer
+                // normal
             } catch (Exception e) {
                 if (running) Log.w(TAG, "Erreur réception : " + e.getMessage());
             }
@@ -154,14 +164,9 @@ public class DiscoveryService extends Service {
 
     private void announceLoop() {
         while (running) {
-            try {
-                sendMessage(MSG_ANNOUNCE, null);
-                Thread.sleep(ANNOUNCE_INTERVAL_MS);
-            } catch (InterruptedException e) {
-                break;
-            } catch (Exception e) {
-                Log.w(TAG, "Erreur annonce : " + e.getMessage());
-            }
+            sendBroadcastMessage(MSG_ANNOUNCE, null);
+            try { Thread.sleep(ANNOUNCE_INTERVAL_MS); }
+            catch (InterruptedException e) { break; }
         }
     }
 
@@ -175,11 +180,85 @@ public class DiscoveryService extends Service {
                 if (!entry.getValue().isActive()) {
                     it.remove();
                     changed = true;
+                    Log.d(TAG, "Peer retiré : " + entry.getValue().getDisplayName());
                 }
             }
             if (changed) notifyPeersChanged();
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Envoi broadcast
+    // -------------------------------------------------------------------------
+
+    private void sendBroadcastMessage(String type, String targetId) {
+        executor.submit(() -> {
+            try {
+                if (sendSocket == null || sendSocket.isClosed()) return;
+
+                JSONObject json = new JSONObject();
+                json.put("type", type);
+                json.put("id", selfId != null ? selfId : "unknown");
+                json.put("name", selfName != null ? selfName : "Unknown");
+                json.put("audioPort", selfAudioPort);
+                if (targetId != null) json.put("targetId", targetId);
+
+                byte[] data = json.toString().getBytes("UTF-8");
+
+                // Envoyer en broadcast global
+                sendTo(data, "255.255.255.255");
+
+                // Envoyer aussi sur le broadcast du sous-réseau Wi-Fi
+                String subnetBroadcast = getWifiBroadcastAddress();
+                if (subnetBroadcast != null && !subnetBroadcast.equals("255.255.255.255")) {
+                    sendTo(data, subnetBroadcast);
+                }
+
+            } catch (Exception e) {
+                Log.w(TAG, "Erreur envoi broadcast : " + e.getMessage());
+            }
+        });
+    }
+
+    private void sendTo(byte[] data, String ip) {
+        try {
+            InetAddress addr = InetAddress.getByName(ip);
+            DatagramPacket packet = new DatagramPacket(data, data.length, addr, DISCOVERY_PORT);
+            sendSocket.send(packet);
+            Log.d(TAG, "Annonce envoyée → " + ip);
+        } catch (Exception e) {
+            Log.w(TAG, "Envoi échoué vers " + ip + " : " + e.getMessage());
+        }
+    }
+
+    /**
+     * Calcule l'adresse de broadcast du réseau Wi-Fi actuel.
+     * Ex : 192.168.8.100 avec masque 255.255.255.0 → 192.168.8.255
+     */
+    private String getWifiBroadcastAddress() {
+        try {
+            WifiManager wifi = (WifiManager) getApplicationContext()
+                    .getSystemService(WIFI_SERVICE);
+            if (wifi == null) return null;
+
+            int ipInt   = wifi.getConnectionInfo().getIpAddress();
+            int maskInt = wifi.getDhcpInfo().netmask;
+            int broadcast = (ipInt & maskInt) | ~maskInt;
+
+            return String.format("%d.%d.%d.%d",
+                    (broadcast & 0xff),
+                    (broadcast >> 8 & 0xff),
+                    (broadcast >> 16 & 0xff),
+                    (broadcast >> 24 & 0xff));
+        } catch (Exception e) {
+            Log.w(TAG, "Impossible de calculer le broadcast : " + e.getMessage());
+            return null;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Traitement des messages reçus
+    // -------------------------------------------------------------------------
 
     private void handleMessage(String raw, InetAddress senderAddress) {
         try {
@@ -202,7 +281,10 @@ public class DiscoveryService extends Service {
                     peer.setAddress(senderAddress);
                     peer.setAudioPort(audioPort);
                     peer.setDisplayName(senderName);
-                    if (isNew) notifyPeersChanged();
+                    if (isNew) {
+                        Log.d(TAG, "Nouveau peer : " + senderName + " @ " + senderAddress.getHostAddress());
+                        notifyPeersChanged();
+                    }
                     break;
                 }
                 case MSG_BYE: {
@@ -264,32 +346,15 @@ public class DiscoveryService extends Service {
         }
     }
 
-    public void sendMessage(String type, String targetId) {
-        if (!running && !MSG_BYE.equals(type)) return;
-        executor.submit(() -> {
-            try {
-                if (multicastSocket == null || multicastSocket.isClosed()) return;
-                JSONObject json = new JSONObject();
-                json.put("type", type);
-                json.put("id", selfId != null ? selfId : "unknown");
-                json.put("name", selfName != null ? selfName : "Unknown");
-                json.put("audioPort", selfAudioPort);
-                if (targetId != null) json.put("targetId", targetId);
+    // -------------------------------------------------------------------------
+    // API publique
+    // -------------------------------------------------------------------------
 
-                byte[] data = json.toString().getBytes("UTF-8");
-                DatagramPacket packet = new DatagramPacket(
-                        data, data.length, groupAddress, DISCOVERY_PORT);
-                multicastSocket.send(packet);
-            } catch (Exception e) {
-                Log.w(TAG, "Erreur envoi : " + e.getMessage());
-            }
-        });
-    }
-
-    public void sendCallRequest(String targetId) { sendMessage(MSG_CALL_REQUEST, targetId); }
-    public void sendCallAccept(String targetId)  { sendMessage(MSG_CALL_ACCEPT,  targetId); }
-    public void sendCallReject(String targetId)  { sendMessage(MSG_CALL_REJECT,  targetId); }
-    public void sendCallEnd(String targetId)     { sendMessage(MSG_CALL_END,     targetId); }
+    public void sendMessage(String type, String targetId) { sendBroadcastMessage(type, targetId); }
+    public void sendCallRequest(String t) { sendBroadcastMessage(MSG_CALL_REQUEST, t); }
+    public void sendCallAccept(String t)  { sendBroadcastMessage(MSG_CALL_ACCEPT,  t); }
+    public void sendCallReject(String t)  { sendBroadcastMessage(MSG_CALL_REJECT,  t); }
+    public void sendCallEnd(String t)     { sendBroadcastMessage(MSG_CALL_END,     t); }
 
     public List<Peer> getPeerList() { return new ArrayList<>(peers.values()); }
     public String getSelfId()       { return selfId; }
@@ -307,8 +372,8 @@ public class DiscoveryService extends Service {
     public void onDestroy() {
         stopDiscovery();
         if (executor != null) executor.shutdownNow();
-        if (multicastLock != null && multicastLock.isHeld()) {
-            try { multicastLock.release(); } catch (Exception ignored) {}
+        if (wifiLock != null && wifiLock.isHeld()) {
+            try { wifiLock.release(); } catch (Exception ignored) {}
         }
         super.onDestroy();
     }
