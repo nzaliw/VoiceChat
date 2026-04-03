@@ -3,23 +3,22 @@ package com.voicechat;
 import android.util.Log;
 
 /**
- * Singleton qui maintient l'état global de l'appel en cours.
- * Évite les problèmes de listeners perdus entre les activités.
+ * Singleton global de gestion d'état des appels.
+ * Garantit le reset complet entre chaque appel.
  */
 public class CallManager {
 
     private static final String TAG = "CallManager";
-    private static CallManager instance;
+    private static final CallManager INSTANCE = new CallManager();
 
     public enum State { IDLE, CALLING, RINGING, IN_CALL }
 
-    private State  state    = State.IDLE;
-    private String peerId   = null;
-    private String peerName = null;
-    private String peerIp   = null;
+    private State   state    = State.IDLE;
+    private String  peerId   = null;
+    private String  peerName = null;
+    private String  peerIp   = null;
     private boolean isCaller = false;
 
-    // Callback vers l'activité active
     private CallEventListener listener;
 
     public interface CallEventListener {
@@ -29,46 +28,45 @@ public class CallManager {
         void onIncomingCall(Peer from);
     }
 
-    public static CallManager get() {
-        if (instance == null) instance = new CallManager();
-        return instance;
-    }
+    public static CallManager get() { return INSTANCE; }
+    private CallManager() {}
 
     // -------------------------------------------------------------------------
-    // Gestion d'état
+    // État
     // -------------------------------------------------------------------------
 
-    public void startOutgoing(Peer peer) {
+    public void startOutgoing(Peer p) {
         state    = State.CALLING;
-        peerId   = peer.getId();
-        peerName = peer.getDisplayName();
-        peerIp   = peer.getAddress().getHostAddress();
+        peerId   = p.getId();
+        peerName = p.getDisplayName();
+        peerIp   = p.getAddress().getHostAddress();
         isCaller = true;
         Log.d(TAG, "startOutgoing → " + peerName);
     }
 
-    public void startIncoming(Peer peer) {
+    public void startIncoming(Peer p) {
         state    = State.RINGING;
-        peerId   = peer.getId();
-        peerName = peer.getDisplayName();
-        peerIp   = peer.getAddress().getHostAddress();
+        peerId   = p.getId();
+        peerName = p.getDisplayName();
+        peerIp   = p.getAddress().getHostAddress();
         isCaller = false;
         Log.d(TAG, "startIncoming ← " + peerName);
     }
 
     public void setInCall() {
         state = State.IN_CALL;
-        Log.d(TAG, "setInCall");
+        Log.d(TAG, "IN_CALL");
     }
 
-    /** Remet tout à zéro — appelé après chaque fin d'appel */
+    /** Remet TOUT à zéro — doit être appelé après chaque fin d'appel */
     public void reset() {
-        Log.d(TAG, "reset() — état IDLE");
+        Log.d(TAG, "reset() → IDLE");
         state    = State.IDLE;
         peerId   = null;
         peerName = null;
         peerIp   = null;
         isCaller = false;
+        // NE PAS effacer le listener ici !
     }
 
     // -------------------------------------------------------------------------
@@ -83,26 +81,34 @@ public class CallManager {
     public boolean isIdle()      { return state == State.IDLE; }
 
     // -------------------------------------------------------------------------
-    // Listener (l'activité courante s'enregistre ici)
+    // Listener — seule l'activité active s'enregistre
     // -------------------------------------------------------------------------
 
-    public void setListener(CallEventListener l) { this.listener = l; }
+    public void setListener(CallEventListener l) {
+        Log.d(TAG, "setListener → " + (l != null ? l.getClass().getSimpleName() : "null"));
+        this.listener = l;
+    }
 
     public void notifyAccepted(Peer by) {
-        Log.d(TAG, "notifyAccepted by=" + by.getDisplayName());
+        Log.d(TAG, "notifyAccepted → " + by.getDisplayName()
+                + " listener=" + (listener != null ? listener.getClass().getSimpleName() : "NULL"));
         if (listener != null) listener.onCallAccepted(by);
     }
+
     public void notifyRejected(Peer by) {
-        Log.d(TAG, "notifyRejected by=" + by.getDisplayName());
+        Log.d(TAG, "notifyRejected → " + by.getDisplayName());
         if (listener != null) listener.onCallRejected(by);
     }
+
     public void notifyEnded(Peer by) {
-        Log.d(TAG, "notifyEnded by=" + by.getDisplayName());
+        Log.d(TAG, "notifyEnded → " + by.getDisplayName()
+                + " listener=" + (listener != null ? listener.getClass().getSimpleName() : "NULL"));
         if (listener != null) listener.onCallEnded(by);
     }
+
     public void notifyIncoming(Peer from) {
-        Log.d(TAG, "notifyIncoming from=" + from.getDisplayName());
+        Log.d(TAG, "notifyIncoming ← " + from.getDisplayName()
+                + " listener=" + (listener != null ? listener.getClass().getSimpleName() : "NULL"));
         if (listener != null) listener.onIncomingCall(from);
     }
 }
-
