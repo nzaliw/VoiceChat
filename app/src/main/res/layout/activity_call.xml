@@ -1,149 +1,183 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
+<androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:gravity="center"
-    android:background="@color/call_background"
-    android:padding="32dp">
+    android:background="@color/call_background">
 
-    <!-- Espace supérieur -->
-    <View
+    <!-- ===== ZONE VIDÉO ===== -->
+    <FrameLayout
+        android:id="@+id/layout_video"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/layout_info">
 
-    <!-- Avatar animé -->
-    <FrameLayout
-        android:layout_width="140dp"
-        android:layout_height="140dp"
-        android:layout_gravity="center_horizontal">
+        <!-- Vidéo distante (plein écran) -->
+        <SurfaceView
+            android:id="@+id/sv_remote"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
 
-        <!-- Cercle de pulsation (animé via drawable) -->
-        <View
-            android:id="@+id/view_pulse"
-            android:layout_width="140dp"
+        <!-- Vidéo locale (miniature coin bas-droit) -->
+        <SurfaceView
+            android:id="@+id/sv_local"
+            android:layout_width="100dp"
             android:layout_height="140dp"
-            android:background="@drawable/circle_pulse"
-            android:alpha="0.3" />
-
-        <!-- Avatar principal -->
-        <TextView
-            android:layout_width="120dp"
-            android:layout_height="120dp"
-            android:layout_gravity="center"
-            android:background="@drawable/circle_avatar_large"
-            android:gravity="center"
-            android:text="👤"
-            android:textSize="48sp" />
+            android:layout_gravity="bottom|end"
+            android:layout_margin="12dp" />
     </FrameLayout>
 
-    <!-- Nom du pair -->
-    <TextView
-        android:id="@+id/tv_call_peer_name"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="28dp"
-        android:textSize="28sp"
-        android:textStyle="bold"
-        android:textColor="@color/white"
-        android:fontFamily="sans-serif-medium" />
-
-    <!-- Statut -->
-    <TextView
-        android:id="@+id/tv_call_status"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:textSize="15sp"
-        android:textColor="#AAFFFFFF" />
-
-    <!-- Timer -->
-    <TextView
-        android:id="@+id/tv_call_timer"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="00:00"
-        android:textSize="20sp"
-        android:textColor="@color/white"
-        android:fontFamily="monospace"
-        android:visibility="invisible" />
-
-    <!-- Espace intermédiaire -->
-    <View
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
-
-    <!-- Contrôles d'appel -->
+    <!-- ===== ZONE INFO (avatar + nom + statut + timer) ===== -->
     <LinearLayout
-        android:layout_width="match_parent"
+        android:id="@+id/layout_info"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:paddingVertical="32dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/layout_controls">
+
+        <!-- Avatar -->
+        <FrameLayout
+            android:layout_width="140dp"
+            android:layout_height="140dp"
+            android:layout_gravity="center_horizontal">
+            <View
+                android:layout_width="140dp"
+                android:layout_height="140dp"
+                android:background="@drawable/circle_pulse"
+                android:alpha="0.3" />
+            <TextView
+                android:layout_width="120dp"
+                android:layout_height="120dp"
+                android:layout_gravity="center"
+                android:background="@drawable/circle_avatar_large"
+                android:gravity="center"
+                android:text="👤"
+                android:textSize="48sp" />
+        </FrameLayout>
+
+        <!-- Nom -->
+        <TextView
+            android:id="@+id/tv_call_peer_name"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:textColor="@color/white"
+            android:fontFamily="sans-serif-medium" />
+
+        <!-- Statut -->
+        <TextView
+            android:id="@+id/tv_call_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textSize="15sp"
+            android:textColor="#AAFFFFFF" />
+
+        <!-- Timer -->
+        <TextView
+            android:id="@+id/tv_call_timer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="00:00"
+            android:textSize="20sp"
+            android:textColor="@color/white"
+            android:fontFamily="monospace"
+            android:visibility="invisible" />
+    </LinearLayout>
+
+    <!-- ===== CONTRÔLES ===== -->
+    <LinearLayout
+        android:id="@+id/layout_controls"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center"
-        android:layout_marginBottom="40dp">
+        android:paddingBottom="48dp"
+        android:paddingTop="16dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
 
-        <!-- Bouton Mute -->
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:layout_marginEnd="48dp">
-
+        <!-- Mute micro -->
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:orientation="vertical" android:gravity="center" android:layout_marginHorizontal="14dp">
             <ImageButton
                 android:id="@+id/btn_mute"
-                android:layout_width="64dp"
-                android:layout_height="64dp"
+                android:layout_width="60dp" android:layout_height="60dp"
                 android:background="@drawable/circle_control"
                 android:src="@android:drawable/ic_lock_silent_mode_off"
                 android:tint="@color/white"
-                android:scaleType="centerInside"
-                android:padding="16dp"
-                android:contentDescription="Couper le micro" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Micro"
-                android:textSize="12sp"
-                android:textColor="#AAFFFFFF" />
+                android:scaleType="centerInside" android:padding="14dp"
+                android:contentDescription="Micro" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="Micro"
+                android:textSize="11sp" android:textColor="#AAFFFFFF" />
         </LinearLayout>
 
-        <!-- Bouton Raccrocher (central, plus grand) -->
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
+        <!-- Caméra (visible seulement en vidéo) -->
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:orientation="vertical" android:gravity="center" android:layout_marginHorizontal="14dp"
+            android:visibility="gone">
+            <ImageButton
+                android:id="@+id/btn_video"
+                android:layout_width="60dp" android:layout_height="60dp"
+                android:background="@drawable/circle_control"
+                android:src="@android:drawable/ic_menu_camera"
+                android:tint="@color/white"
+                android:scaleType="centerInside" android:padding="14dp"
+                android:contentDescription="Caméra" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="Caméra"
+                android:textSize="11sp" android:textColor="#AAFFFFFF" />
+        </LinearLayout>
 
+        <!-- Raccrocher (bouton central) -->
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:orientation="vertical" android:gravity="center" android:layout_marginHorizontal="14dp">
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_hangup"
-                android:layout_width="80dp"
-                android:layout_height="80dp"
+                android:layout_width="72dp" android:layout_height="72dp"
                 android:text=""
                 app:icon="@android:drawable/ic_menu_call"
-                app:iconSize="32dp"
-                app:iconGravity="textStart"
-                app:iconPadding="0dp"
+                app:iconSize="30dp" app:iconGravity="textStart" app:iconPadding="0dp"
                 app:backgroundTint="@color/red"
-                app:cornerRadius="40dp"
+                app:cornerRadius="36dp"
                 android:rotation="135"
                 android:contentDescription="Raccrocher" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="Raccrocher"
+                android:textSize="11sp" android:textColor="#AAFFFFFF" />
+        </LinearLayout>
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Raccrocher"
-                android:textSize="12sp"
-                android:textColor="#AAFFFFFF" />
+        <!-- Haut-parleur -->
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:orientation="vertical" android:gravity="center" android:layout_marginHorizontal="14dp">
+            <ImageButton
+                android:id="@+id/btn_speaker"
+                android:layout_width="60dp" android:layout_height="60dp"
+                android:background="@drawable/circle_control"
+                android:src="@android:drawable/ic_lock_silent_mode_off"
+                android:tint="@color/white"
+                android:scaleType="centerInside" android:padding="14dp"
+                android:contentDescription="Haut-parleur" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="HP"
+                android:textSize="11sp" android:textColor="#AAFFFFFF" />
         </LinearLayout>
 
     </LinearLayout>
 
-</LinearLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>
