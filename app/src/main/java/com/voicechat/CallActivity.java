@@ -38,8 +38,14 @@ public class CallActivity extends AppCompatActivity
     private int     myAudioPort, peerAudioPort;
     private boolean muted        = false;
     private boolean audioStarted = false;
-    private boolean callReady    = false;
-    private boolean finishing    = false; // évite les doubles appels à finish()
+    private boolean finishing    = false;
+
+    // Drapeaux indépendants pour chaque prérequis
+    private boolean discoveryReady = false; // DiscoveryService lié
+    private boolean audioReady     = false; // AudioStreamService lié
+    private boolean signalReady    = false; // signal "go" reçu
+    //   CALLER  : signalReady = true quand CALL_ACCEPT reçu
+    //   CALLEE  : signalReady = true immédiatement (il a déjà accepté)
 
     private DiscoveryService   discoveryService;
     private AudioStreamService audioStreamService;
@@ -54,7 +60,7 @@ public class CallActivity extends AppCompatActivity
     private int           elapsedSeconds = 0;
 
     private static final int RETRY_MS  = 1500;
-    private static final int MAX_RETRY = 8;
+    private static final int MAX_RETRY = 10;
     private int retryCount = 0;
 
     // -------------------------------------------------------------------------
@@ -74,50 +80,40 @@ public class CallActivity extends AppCompatActivity
         myAudioPort   = isCaller ? CALLER_AUDIO_PORT : CALLEE_AUDIO_PORT;
         peerAudioPort = isCaller ? CALLEE_AUDIO_PORT : CALLER_AUDIO_PORT;
 
-        Log.d(TAG, "onCreate isCaller=" + isCaller
-                + " myPort=" + myAudioPort + " peerPort=" + peerAudioPort + " ip=" + peerIp);
+        Log.d(TAG, "=== CALL START isCaller=" + isCaller
+                + " myPort=" + myAudioPort
+                + " peerPort=" + peerAudioPort
+                + " peerIp=" + peerIp + " ===");
 
         initViews();
-        updateStatus(isCaller ? "Appel de " + peerName + "..." : "Connexion...");
+        updateStatus(isCaller ? "Appel de " + peerName + "..." : "Décrochage...");
 
-        // S'enregistrer comme listener actif dans CallManager
         CallManager.get().setListener(this);
 
-        // Lier les services
-        bindService(new Intent(this, DiscoveryService.class), discoveryConn, Context.BIND_AUTO_CREATE);
+        // Lier AudioStreamService EN PREMIER (le plus long)
         Intent ai = new Intent(this, AudioStreamService.class);
         startService(ai);
         bindService(ai, audioConn, Context.BIND_AUTO_CREATE);
+
+        // Lier DiscoveryService
+        bindService(new Intent(this, DiscoveryService.class),
+                discoveryConn, Context.BIND_AUTO_CREATE);
     }
 
     @Override
     protected void onDestroy() {
         Log.d(TAG, "onDestroy");
         mainHandler.removeCallbacksAndMessages(null);
-
-        // Stopper l'audio
-        if (audioBound && audioStreamService != null && audioStreamService.isStreaming()) {
+        if (audioBound && audioStreamService != null) {
             audioStreamService.stopStreaming();
         }
-
-        // Rendre le listener à MainActivity
         CallManager.get().setListener(null);
-
-        // Délier les services
-        if (discoveryBound) {
-            try { unbindService(discoveryConn); } catch (Exception ignored) {}
-            discoveryBound = false;
-        }
-        if (audioBound) {
-            try { unbindService(audioConn); } catch (Exception ignored) {}
-            audioBound = false;
-        }
-
+        if (discoveryBound) try { unbindService(discoveryConn); } catch (Exception ignored) {}
+        if (audioBound)     try { unbindService(audioConn);     } catch (Exception ignored) {}
         super.onDestroy();
     }
 
-    @Override
-    public void onBackPressed() { hangup(); }
+    @Override public void onBackPressed() { hangup(); }
 
     // -------------------------------------------------------------------------
     // UI
@@ -136,45 +132,61 @@ public class CallActivity extends AppCompatActivity
     }
 
     private void updateStatus(String s) {
+        Log.d(TAG, "STATUS: " + s);
         runOnUiThread(() -> { if (tvCallStatus != null) tvCallStatus.setText(s); });
     }
 
     // -------------------------------------------------------------------------
-    // Logique d'appel
+    // Logique centrale : démarrer quand les 3 conditions sont réunies
     // -------------------------------------------------------------------------
 
-    private void checkAndStart() {
+    /**
+     * Vérifie si les 3 prérequis sont satisfaits et démarre l'audio.
+     * Peut être appelé depuis n'importe quel thread, autant de fois que nécessaire.
+     *
+     * Prérequis :
+     *   1. discoveryReady  — DiscoveryService lié
+     *   2. audioReady      — AudioStreamService lié
+     *   3. signalReady     — CALL_ACCEPT reçu (caller) OU déjà accepté (callee)
+     */
+    private synchronized void tryStart() {
+        Log.d(TAG, "tryStart() audioStarted=" + audioStarted
+                + " discoveryReady=" + discoveryReady
+                + " audioReady=" + audioReady
+                + " signalReady=" + signalReady);
+
+        if (audioStarted)    return;
+        if (!discoveryReady) return;
+        if (!audioReady)     return;
+        if (!signalReady)    return;
+
+        audioStarted = true;
+        CallManager.get().setInCall();
+
         mainHandler.post(() -> {
-            if (audioStarted || !callReady || !audioBound || audioStreamService == null) return;
-            audioStarted = true;
-            CallManager.get().setInCall();
-            Log.d(TAG, "✅ Démarrage audio");
             updateStatus("En communication");
             if (tvTimer != null) tvTimer.setVisibility(View.VISIBLE);
             mainHandler.postDelayed(timerRunnable, 1000);
             try {
+                Log.d(TAG, "▶ startStreaming → " + peerIp + ":" + peerAudioPort
+                        + " écoute:" + myAudioPort);
                 audioStreamService.startStreaming(
                         InetAddress.getByName(peerIp), peerAudioPort, myAudioPort);
             } catch (Exception e) {
-                Log.e(TAG, "Erreur audio", e);
-                updateStatus("Erreur réseau");
+                Log.e(TAG, "Erreur startStreaming", e);
+                updateStatus("Erreur réseau : " + e.getMessage());
             }
         });
     }
 
-    private void markReady() {
-        callReady = true;
-        checkAndStart();
-    }
+    // -------------------------------------------------------------------------
+    // Fin d'appel
+    // -------------------------------------------------------------------------
 
-    /** Raccrocher = action volontaire de l'utilisateur */
     private void hangup() {
         if (finishing) return;
         finishing = true;
-        Log.d(TAG, "hangup()");
-        mainHandler.removeCallbacks(timerRunnable);
-        mainHandler.removeCallbacks(retryRunnable);
-
+        mainHandler.removeCallbacksAndMessages(null);
         if (audioBound && audioStreamService != null) audioStreamService.stopStreaming();
         if (discoveryBound && discoveryService != null && peerId != null) {
             discoveryService.sendCallEnd(peerId);
@@ -183,21 +195,12 @@ public class CallActivity extends AppCompatActivity
         finish();
     }
 
-    /**
-     * L'autre a raccroché — fermer proprement ET immédiatement.
-     * Appelé depuis onCallEnded().
-     */
-    private void closeByRemote(String reason) {
+    private void closeByRemote() {
         if (finishing) return;
         finishing = true;
-        Log.d(TAG, "closeByRemote : " + reason);
-        mainHandler.removeCallbacks(timerRunnable);
-        mainHandler.removeCallbacks(retryRunnable);
-
+        mainHandler.removeCallbacksAndMessages(null);
         if (audioBound && audioStreamService != null) audioStreamService.stopStreaming();
         CallManager.get().reset();
-
-        // Fermer l'activité immédiatement sans attendre l'utilisateur
         runOnUiThread(this::finish);
     }
 
@@ -215,7 +218,7 @@ public class CallActivity extends AppCompatActivity
 
     private final Runnable retryRunnable = new Runnable() {
         @Override public void run() {
-            if (audioStarted || retryCount >= MAX_RETRY) return;
+            if (audioStarted || finishing || retryCount >= MAX_RETRY) return;
             retryCount++;
             Log.d(TAG, "Retry CALL_ACCEPT #" + retryCount);
             if (discoveryBound && discoveryService != null && peerId != null) {
@@ -232,59 +235,65 @@ public class CallActivity extends AppCompatActivity
     @Override
     public void onCallAccepted(Peer by) {
         if (isCaller && peerId != null && peerId.equals(by.getId())) {
-            Log.d(TAG, "✅ CALL_ACCEPT reçu");
-            markReady();
+            Log.d(TAG, "✅ CALL_ACCEPT reçu de " + by.getDisplayName());
+            signalReady = true;
+            tryStart();
         }
     }
 
     @Override
     public void onCallRejected(Peer by) {
-        if (peerId != null && peerId.equals(by.getId())) {
-            closeByRemote(by.getDisplayName() + " a refusé.");
-        }
+        if (peerId != null && peerId.equals(by.getId())) closeByRemote();
     }
 
     @Override
     public void onCallEnded(Peer by) {
         if (peerId != null && peerId.equals(by.getId())) {
-            Log.d(TAG, "CALL_END reçu de " + by.getDisplayName());
-            closeByRemote("Appel terminé par " + by.getDisplayName());
+            Log.d(TAG, "CALL_END reçu → fermeture");
+            closeByRemote();
         }
     }
 
-    @Override public void onIncomingCall(Peer from) { /* impossible ici */ }
+    @Override public void onIncomingCall(Peer from) {}
 
     // -------------------------------------------------------------------------
     // ServiceConnections
     // -------------------------------------------------------------------------
-
-    private final ServiceConnection discoveryConn = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName n, IBinder b) {
-            discoveryService = ((DiscoveryService.LocalBinder) b).getService();
-            discoveryBound   = true;
-            Log.d(TAG, "DiscoveryService lié");
-
-            if (!isCaller) {
-                // CALLEE : envoyer CALL_ACCEPT + retransmissions
-                discoveryService.sendCallAccept(peerId);
-                mainHandler.postDelayed(retryRunnable, RETRY_MS);
-                markReady();
-            }
-            checkAndStart();
-        }
-        @Override public void onServiceDisconnected(ComponentName n) { discoveryBound = false; }
-    };
 
     private final ServiceConnection audioConn = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName n, IBinder b) {
             audioStreamService = ((AudioStreamService.LocalBinder) b).getService();
             audioBound         = true;
-            Log.d(TAG, "AudioStreamService lié");
-            checkAndStart();
+            audioReady         = true;
+            Log.d(TAG, "AudioStreamService lié ✓");
+            tryStart();
         }
-        @Override public void onServiceDisconnected(ComponentName n) { audioBound = false; }
+        @Override public void onServiceDisconnected(ComponentName n) {
+            audioBound = false; audioReady = false;
+        }
+    };
+
+    private final ServiceConnection discoveryConn = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName n, IBinder b) {
+            discoveryService = ((DiscoveryService.LocalBinder) b).getService();
+            discoveryBound   = true;
+            discoveryReady   = true;
+            Log.d(TAG, "DiscoveryService lié ✓");
+
+            if (!isCaller) {
+                // CALLEE : envoyer CALL_ACCEPT maintenant + retransmissions
+                Log.d(TAG, "CALLEE → envoi CALL_ACCEPT + signalReady=true");
+                discoveryService.sendCallAccept(peerId);
+                signalReady = true;
+                mainHandler.postDelayed(retryRunnable, RETRY_MS);
+            }
+            tryStart();
+        }
+        @Override public void onServiceDisconnected(ComponentName n) {
+            discoveryBound = false; discoveryReady = false;
+        }
     };
 
     // -------------------------------------------------------------------------
