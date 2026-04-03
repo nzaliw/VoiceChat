@@ -10,6 +10,7 @@ import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.util.Log;
 import android.view.View;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -35,12 +36,15 @@ public class MainActivity extends AppCompatActivity
     private DiscoveryService discoveryService;
     private boolean          serviceBound = false;
 
-    private PeerAdapter       peerAdapter;
-    private TextView          tvMyName, tvWifiInfo;
-    private View              tvNoPeers;
-    private RecyclerView      recyclerView;
+    private PeerAdapter          peerAdapter;
+    private TextView             tvMyName, tvWifiInfo;
+    private View                 tvNoPeers;
+    private RecyclerView         recyclerView;
     private FloatingActionButton fabRefresh;
-    private String            myDisplayName;
+    private String               myDisplayName;
+
+    // Dialog d'appel entrant courant (pour le fermer si nécessaire)
+    private AlertDialog incomingDialog = null;
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -70,14 +74,10 @@ public class MainActivity extends AppCompatActivity
     @Override
     protected void onResume() {
         super.onResume();
-        // Toujours (re)enregistrer MainActivity comme listener CallManager
+        // Reprendre le listener à chaque fois qu'on revient sur MainActivity
+        // (après la fin d'un appel, CallActivity cède le listener)
         CallManager.get().setListener(this);
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        // Ne pas désenregistrer ici pour continuer à recevoir les appels en arrière-plan
+        Log.d("MainActivity", "onResume → listener enregistré");
     }
 
     @Override
@@ -113,6 +113,7 @@ public class MainActivity extends AppCompatActivity
         if (fabRefresh != null) {
             fabRefresh.setOnClickListener(v -> {
                 if (serviceBound) onPeersChanged(discoveryService.getPeerList());
+                updateWifiInfo();
             });
         }
         updateWifiInfo();
@@ -172,36 +173,41 @@ public class MainActivity extends AppCompatActivity
     @Override
     public void onIncomingCall(Peer from) {
         runOnUiThread(() -> {
-            // Vérifier qu'on n'est pas déjà en appel
+            // Ignorer si déjà en appel
             if (!CallManager.get().isIdle()) {
                 if (serviceBound) discoveryService.sendCallReject(from.getId());
                 return;
             }
             CallManager.get().startIncoming(from);
 
-            new AlertDialog.Builder(this)
+            // Fermer un éventuel dialog précédent
+            if (incomingDialog != null && incomingDialog.isShowing()) {
+                incomingDialog.dismiss();
+            }
+
+            incomingDialog = new AlertDialog.Builder(this)
                     .setTitle("📞 Appel entrant")
                     .setMessage(from.getDisplayName() + " vous appelle.")
-                    .setPositiveButton("Répondre", (d, w) -> acceptCall(from))
-                    .setNegativeButton("Refuser",  (d, w) -> {
+                    .setPositiveButton("Répondre", (d, w) -> {
+                        incomingDialog = null;
+                        openCallScreen(from.getDisplayName(),
+                                from.getAddress().getHostAddress(),
+                                from.getId(), false);
+                    })
+                    .setNegativeButton("Refuser", (d, w) -> {
+                        incomingDialog = null;
                         CallManager.get().reset();
                         if (serviceBound) discoveryService.sendCallReject(from.getId());
                     })
                     .setCancelable(false)
-                    .show();
+                    .create();
+            incomingDialog.show();
         });
-    }
-
-    private void acceptCall(Peer from) {
-        // Ouvrir CallActivity — c'est elle qui enverra CALL_ACCEPT
-        openCallScreen(from.getDisplayName(), from.getAddress().getHostAddress(),
-                from.getId(), false);
     }
 
     @Override
     public void onCallAccepted(Peer by) {
-        // Reçu par MainActivity si CallActivity n'est pas encore enregistrée
-        // → ne rien faire ici, CallActivity gère cela via CallManager
+        // Géré par CallActivity quand elle est ouverte
     }
 
     @Override
@@ -214,9 +220,15 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     public void onCallEnded(Peer by) {
+        // Si on reçoit CALL_END alors qu'on est sur MainActivity (pas sur CallActivity)
+        // c'est un cas rare — juste réinitialiser
         runOnUiThread(() -> {
             CallManager.get().reset();
-            Toast.makeText(this, "Appel terminé.", Toast.LENGTH_SHORT).show();
+            // Fermer le dialog entrant si ouvert
+            if (incomingDialog != null && incomingDialog.isShowing()) {
+                incomingDialog.dismiss();
+                incomingDialog = null;
+            }
         });
     }
 
@@ -229,8 +241,10 @@ public class MainActivity extends AppCompatActivity
         runOnUiThread(() -> {
             try {
                 peerAdapter.updatePeers(peers);
-                if (tvNoPeers  != null) tvNoPeers.setVisibility(peers.isEmpty() ? View.VISIBLE : View.GONE);
-                if (recyclerView != null) recyclerView.setVisibility(peers.isEmpty() ? View.GONE : View.VISIBLE);
+                if (tvNoPeers != null)
+                    tvNoPeers.setVisibility(peers.isEmpty() ? View.VISIBLE : View.GONE);
+                if (recyclerView != null)
+                    recyclerView.setVisibility(peers.isEmpty() ? View.GONE : View.VISIBLE);
             } catch (Exception ignored) {}
         });
     }
@@ -280,10 +294,12 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
-    public void onRequestPermissionsResult(int req, @NonNull String[] perms, @NonNull int[] res) {
-        super.onRequestPermissionsResult(req, perms, res);
-        if (req == REQ_PERM && (res.length == 0 || res[0] != PackageManager.PERMISSION_GRANTED)) {
+    public void onRequestPermissionsResult(int req, @NonNull String[] p, @NonNull int[] r) {
+        super.onRequestPermissionsResult(req, p, r);
+        if (req == REQ_PERM && (r.length == 0 || r[0] != PackageManager.PERMISSION_GRANTED)) {
             Toast.makeText(this, "Permission microphone requise.", Toast.LENGTH_LONG).show();
         }
     }
+
+    // Import manquant
 }
