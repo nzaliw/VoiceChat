@@ -188,6 +188,7 @@ public class MainActivity extends AppCompatActivity
                     .setNegativeButton("Refuser", (d, w) -> {
                         incomingDialog = null;
                         CallManager.get().reset();
+            if (serviceBound && discoveryService != null) discoveryService.restartDiscovery();
                         if (serviceBound) discoveryService.sendCallReject(from.getId());
                     })
                     .setCancelable(false)
@@ -202,6 +203,7 @@ public class MainActivity extends AppCompatActivity
     public void onCallRejected(Peer by) {
         runOnUiThread(() -> {
             CallManager.get().reset();
+            if (serviceBound && discoveryService != null) discoveryService.restartDiscovery();
             Toast.makeText(this, by.getDisplayName() + " a refusé.", Toast.LENGTH_SHORT).show();
         });
     }
@@ -210,6 +212,7 @@ public class MainActivity extends AppCompatActivity
     public void onCallEnded(Peer by) {
         runOnUiThread(() -> {
             CallManager.get().reset();
+            if (serviceBound && discoveryService != null) discoveryService.restartDiscovery();
             if (incomingDialog != null && incomingDialog.isShowing()) {
                 incomingDialog.dismiss(); incomingDialog = null;
             }
